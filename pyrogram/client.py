@@ -25,6 +25,7 @@ from pyrogram import __license__, __version__, enums, raw, utils
 from pyrogram.crypto import aes
 from pyrogram.errors import (
     BadRequest,
+    AuthBytesInvalid,
     CDNFileHashMismatch,
     ChannelPrivate,
     FloodPremiumWait,
