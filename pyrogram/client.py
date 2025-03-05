@@ -327,6 +327,7 @@ class Client(Methods):
         self.parser = Parser(self)
         self.session = None
         self.media_sessions = {}
+        self.media_sessions_timestamps = {}
         self.media_sessions_lock = asyncio.Lock()
         self.save_file_semaphore = asyncio.Semaphore(
             self.max_concurrent_transmissions,
@@ -1068,40 +1069,54 @@ class Client(Methods):
             dc_id = file_id.dc_id
 
             try:
-                session = self.media_sessions.get(dc_id)
-                if not session:
-                    session = self.media_sessions[dc_id] = Session(
-                        self, dc_id,
-                        await Auth(self, dc_id, await self.storage.test_mode()).create()
-                        if dc_id != await self.storage.dc_id()
-                        else await self.storage.auth_key(),
-                        await self.storage.test_mode(),
-                        is_media=True
-                    )
-                    await session.start()
+                async with self.media_sessions_lock:
+                    session = self.media_sessions.get(dc_id)
+                    current_time = time.time()
+                    
+                    session_timestamp = getattr(self, 'media_sessions_timestamps', {}).get(dc_id, 0)
+                    if not session or (current_time - session_timestamp > 1200):
+                        if session:
+                            await session.stop()
+                            
+                        session = Session(
+                            self, dc_id,
+                            await Auth(self, dc_id, await self.storage.test_mode()).create()
+                            if dc_id != await self.storage.dc_id()
+                            else await self.storage.auth_key(),
+                            await self.storage.test_mode(),
+                            is_media=True
+                        )
+                        
+                        await session.start()
 
-                    if dc_id != await self.storage.dc_id():
-                        for _ in range(3):
-                            exported_auth = await self.invoke(
-                                raw.functions.auth.ExportAuthorization(
-                                    dc_id=dc_id
-                                )
-                            )
-
-                            try:
-                                await session.invoke(
-                                    raw.functions.auth.ImportAuthorization(
-                                        id=exported_auth.id,
-                                        bytes=exported_auth.bytes
+                        if dc_id != await self.storage.dc_id():
+                            for _ in range(3):
+                                exported_auth = await self.invoke(
+                                    raw.functions.auth.ExportAuthorization(
+                                        dc_id=dc_id
                                     )
                                 )
-                            except AuthBytesInvalid:
-                                continue
-                            else:
-                                break
-                        else:
-                            raise AuthBytesInvalid
 
+                                try:
+                                    await session.invoke(
+                                        raw.functions.auth.ImportAuthorization(
+                                            id=exported_auth.id,
+                                            bytes=exported_auth.bytes
+                                        )
+                                    )
+                                except AuthBytesInvalid:
+                                    continue
+                                else:
+                                    break
+                            else:
+                                raise AuthBytesInvalid
+                        
+                        self.media_sessions[dc_id] = session
+                        
+                        if not hasattr(self, 'media_sessions_timestamps'):
+                            self.media_sessions_timestamps = {}
+                        self.media_sessions_timestamps[dc_id] = current_time
+                
                 r = await session.invoke(
                     raw.functions.upload.GetFile(
                         location=location,
@@ -1180,7 +1195,6 @@ class Client(Methods):
 
                             chunk = r2.bytes
 
-                            # https://core.telegram.org/cdn#decrypting-files
                             decrypted_chunk = aes.ctr256_decrypt(
                                 chunk,
                                 r.encryption_key,
@@ -1197,7 +1211,6 @@ class Client(Methods):
                                 )
                             )
 
-                            # https://core.telegram.org/cdn#verifying-files
                             for i, h in enumerate(hashes):
                                 cdn_chunk = decrypted_chunk[h.limit * i: h.limit * (i + 1)]
                                 CDNFileHashMismatch.check(
@@ -1234,7 +1247,7 @@ class Client(Methods):
             except (FloodWait, FloodPremiumWait):
                 raise
             except Exception as e:
-                log.exception(e) 
+                log.exception(e)
                 
     def guess_mime_type(self, filename: str) -> str | None:
         return self.mimetypes.guess_type(filename)[0]
