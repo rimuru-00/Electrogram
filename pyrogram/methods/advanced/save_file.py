@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, BinaryIO, Union
 
 import pyrogram
 from pyrogram import StopTransmissionError, raw
-from pyrogram.session import Session
+from pyrogram.session import Session, Auth
 
 if TYPE_CHECKING:
     from collections.abc import Callable
