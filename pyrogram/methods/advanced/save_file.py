@@ -9,11 +9,11 @@ import math
 import time
 from hashlib import md5
 from pathlib import Path, PurePath
-from typing import TYPE_CHECKING, BinaryIO, Union
+from typing import TYPE_CHECKING, BinaryIO
 
 import pyrogram
 from pyrogram import StopTransmissionError, raw
-from pyrogram.session import Session, Auth
+from pyrogram.session import Session
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -21,24 +21,76 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-class SaveFile:
+class SaveFile: 
+    async def get_cached_sessions(
+        self: pyrogram.Client,
+        pool_size: int, 
+        is_media: bool = True
+    ) -> List[Session]:
+        """Get cached sessions or create new ones if needed."""
+        async with self.media_sessions_lock:
+            dc_id = await self.storage.dc_id()
+            auth_key = await self.storage.auth_key()
+            test_mode = await self.storage.test_mode()
+        
+            cache_key = (dc_id, pool_size, is_media)
+            if cache_key not in self.upload_sessions:
+                self.upload_sessions[cache_key] = []
+        
+            current_time = time.time()
+            cached_sessions = self.upload_sessions[cache_key]
+            valid_sessions = []
+        
+            for session, timestamp in cached_sessions[:]:
+                if current_time - timestamp < 1200:
+                    valid_sessions.append((session, timestamp))
+                else:
+                    self.loop.create_task(session.stop())
+                    log.debug(
+                        "Closed expired session (age: %.2fs)", 
+                        current_time - timestamp
+                    )
+                
+            self.upload_sessions[cache_key] = valid_sessions
+            available_sessions = [session for session, _ in valid_sessions[:pool_size]]
+        
+            new_sessions_count = pool_size - len(available_sessions)
+            if new_sessions_count > 0:
+                log.debug(
+                    "Creating %d new sessions for pool_size=%d", 
+                    new_sessions_count, 
+                    pool_size
+                )
+            
+            while len(available_sessions) < pool_size:
+                session = Session(
+                    self,
+                    dc_id,
+                    auth_key,
+                    test_mode,
+                    is_media=is_media
+                )
+                available_sessions.append(session)
+                self.upload_sessions[cache_key].append((session, current_time))
+                await session.start()
+            
+            return available_sessions
+    
     async def save_file(
-        self: "pyrogram.Client",
-        path: Union[str, BinaryIO],
-        file_id: int = None,
+        self: pyrogram.Client,
+        path: str | BinaryIO,
+        file_id: int | None = None,
         file_part: int = 0,
-        progress: Callable = None,
-        progress_args: tuple = ()
+        progress: Callable | None = None,
+        progress_args: tuple = (),
     ):
         """Upload a file onto Telegram servers, without actually sending the message to anyone.
         Useful whenever an InputFile type is required.
 
         .. note::
-
             This is a utility method intended to be used **only** when working with raw
             :obj:`functions <pyrogram.api.functions>` (i.e: a Telegram API method you wish to use which is not
             available yet in the Client class as an easy-to-use method).
-
         .. include:: /_includes/usable-by/users-bots.rst
 
         Parameters:
@@ -79,169 +131,173 @@ class SaveFile:
 
         Raises:
             RPCError: In case of a Telegram RPC error.
+
         """
         async with self.save_file_semaphore:
             if path is None:
                 return None
 
-            async def worker(session):
+            async def worker(session) -> None:
                 while True:
                     data = await queue.get()
-
+ 
                     if data is None:
                         return
-
                     for attempt in range(3):
                         try:
                             await session.invoke(data)
                             break
                         except Exception as e:
-                            if attempt < 2:
-                                log.warning(f"Retrying part due to error: {e}")
-                                await asyncio.sleep(2**attempt)
-                            else:
-                                log.exception(f"Failed after 3 attempts: {e}")
+                            log.warning("Retrying part due to error: %s", e)
+                            await asyncio.sleep(2**attempt)
 
-            async def preload(fp, part_size):
-                return fp.read(part_size)
+            def create_rpc(chunk, file_part, is_big, file_id, file_total_parts):
+                if is_big:
+                    return raw.functions.upload.SaveBigFilePart(
+                        file_id=file_id,
+                        file_part=file_part,
+                        file_total_parts=file_total_parts,
+                        bytes=chunk,
+                    )
+                return raw.functions.upload.SaveFilePart(
+                    file_id=file_id,
+                    file_part=file_part,
+                    bytes=chunk,
+                )
 
             part_size = 512 * 1024
+            queue = asyncio.Queue(32)
 
-            if isinstance(path, (str, PurePath)):
-                fp = open(path, "rb")
-            elif isinstance(path, io.IOBase):
-                fp = path
-            else:
-                raise ValueError("Invalid file. Expected a file path as string or a binary (not text) file pointer")
+            with (
+                Path(path).open("rb", buffering=4096)  # noqa: ASYNC230
+                if isinstance(path, str | PurePath)
+                else path
+            ) as fp:
+                file_name = getattr(fp, "name", "file.jpg")
+                fp.seek(0, io.SEEK_END)
+                file_size = fp.tell()
+                fp.seek(0)
 
-            file_name = getattr(fp, "name", "file.jpg")
+                if file_size == 0:
+                    raise ValueError("File size equals to 0 B")
 
-            fp.seek(0, io.SEEK_END)
-            file_size = fp.tell()
-            fp.seek(0)
+                file_size_limit_mib = 4000 if self.me.is_premium else 2000
 
-            if file_size == 0:
-                raise ValueError("File size equals to 0 B")
-
-            if self.me and self.me.is_premium:
-                file_size_limit_mib = 4000
-            else:
-                file_size_limit_mib = 2000
-
-            if file_size > file_size_limit_mib * 1024 * 1024:
-                raise ValueError(f"Can't upload files bigger than {file_size_limit_mib} MiB")
-
-            file_total_parts = int(math.ceil(file_size / part_size))
-            is_big = file_size > 10 * 1024 * 1024
-            workers_count = 4 if is_big else 1
-            is_missing_part = file_id is not None
-            file_id = file_id or self.rnd_id()
-            md5_sum = md5() if not is_big and not is_missing_part else None
-            dc_id = await self.storage.dc_id()
-
-            if not hasattr(self, 'media_sessions'):
-                self.media_sessions = {}
-                
-            async with self.media_sessions_lock:
-                session = self.media_sessions.get(dc_id)
-                current_time = time.time()
-                    
-                session_timestamp = getattr(self, 'media_sessions_timestamps', {}).get(dc_id, 0)
-                if not session or (current_time - session_timestamp > 1200):
-                    if session:
-                        await session.stop()
-                            
-                    session = Session(
-                        self, dc_id,
-                        await Auth(self, dc_id, await self.storage.test_mode()).create()
-                        if dc_id != await self.storage.dc_id()
-                        else await self.storage.auth_key(),
-                        await self.storage.test_mode(),
-                        is_media=True
+                if file_size > file_size_limit_mib * 1024 * 1024:
+                    raise ValueError(
+                        f"Can't upload files bigger than {file_size_limit_mib} MiB",
                     )
-                    await session.start() 
-                
-                self.media_sessions[dc_id] = session
-                        
-                if not hasattr(self, 'media_sessions_timestamps'):
-                    self.media_sessions_timestamps = {}
-                    self.media_sessions_timestamps[dc_id] = current_time
-             
-            workers = [self.loop.create_task(worker(session)) for _ in range(workers_count)]
-            queue = asyncio.Queue(1)
 
-            try:
-                fp.seek(part_size * file_part)
-                next_chunk_task = self.loop.create_task(preload(fp, part_size))
+                file_total_parts = math.ceil(file_size / part_size)
+                is_big = file_size > 10 * 1024 * 1024
+                pool_size = 2 if is_big else 1
+                workers_count = 4 if is_big else 1
+                is_missing_part = file_id is not None
+                file_id = file_id or self.rnd_id()
+                md5_sum = md5() if not is_big and not is_missing_part else None
 
-                while True:
-                    chunk = await next_chunk_task
-                    next_chunk_task = self.loop.create_task(preload(fp, part_size))
+                pool = await self.get_cached_sessions(pool_size, is_media=True)
 
-                    if not chunk:
+                workers = [
+                    self.loop.create_task(worker(session))
+                    for session in pool
+                    for _ in range(workers_count)
+                ]
+
+                try:
+                    for session in pool:
+                        await session.start()
+
+                    fp.seek(part_size * file_part)
+                    next_chunk_task = self.loop.create_task(self.preload(fp, part_size))
+
+                    while True:
+                        chunk = await next_chunk_task
+                        next_chunk_task = self.loop.create_task(
+                            self.preload(fp, part_size),
+                        )
+
+                        if not chunk:
+                            if not is_big and not is_missing_part:
+                                md5_sum = md5_sum.hexdigest()
+                            break
+
+                        await queue.put(
+                            create_rpc(
+                                chunk,
+                                file_part,
+                                is_big,
+                                file_id,
+                                file_total_parts,
+                            ),
+                        )
+
+                        if is_missing_part:
+                            return None
+
                         if not is_big and not is_missing_part:
-                            md5_sum = "".join([hex(i)[2:].zfill(2) for i in md5_sum.digest()])
-                        break
+                            md5_sum.update(chunk)
 
-                    if is_big:
-                        rpc = raw.functions.upload.SaveBigFilePart(
-                            file_id=file_id,
-                            file_part=file_part,
-                            file_total_parts=file_total_parts,
-                            bytes=chunk
-                        )
-                    else:
-                        rpc = raw.functions.upload.SaveFilePart(
-                            file_id=file_id,
-                            file_part=file_part,
-                            bytes=chunk
-                        )
+                        file_part += 1
 
-                    await queue.put(rpc)
+                        if progress:
+                            func = functools.partial(
+                                progress,
+                                min(file_part * part_size, file_size),
+                                file_size,
+                                *progress_args,
+                            )
 
-                    if is_missing_part:
-                        return
-
-                    if not is_big and not is_missing_part:
-                        md5_sum.update(chunk)
-
-                    file_part += 1
-
-                    if progress:
-                        func = functools.partial(
-                            progress,
-                            min(file_part * part_size, file_size),
-                            file_size,
-                            *progress_args
-                        )
-
-                        if inspect.iscoroutinefunction(progress):
-                            await func()
-                        else:
-                            await self.loop.run_in_executor(self.executor, func)
-            except StopTransmission:
-                raise
-            except Exception as e:
-                log.exception(f"Error during file upload at part {file_part}: {e}")
-            else:
-                if is_big:
-                    return raw.types.InputFileBig(
-                        id=file_id,
-                        parts=file_total_parts,
-                        name=file_name,
+                            if inspect.iscoroutinefunction(progress):
+                                await func()
+                            else:
+                                await self.loop.run_in_executor(self.executor, func)
+                except StopTransmissionError:
+                    raise
+                except Exception as e:
+                    log.error(
+                        "Error during file upload at part %s: %s",
+                        file_part,
+                        e,
                     )
                 else:
+                    if is_big:
+                        return raw.types.InputFileBig(
+                            id=file_id,
+                            parts=file_total_parts,
+                            name=file_name,
+                        )
                     return raw.types.InputFile(
                         id=file_id,
                         parts=file_total_parts,
                         name=file_name,
-                        md5_checksum=md5_sum
+                        md5_checksum=md5_sum,
                     )
-            finally:
-                for _ in workers:
-                    await queue.put(None)
+                finally:
+                    for _ in workers:
+                        await queue.put(None)
+                    await asyncio.gather(*workers)
 
-                await asyncio.gather(*workers)
 
-                if isinstance(path, (str, PurePath)):
-                    fp.close()
+    async def preload(self, fp, part_size):
+        return fp.read(part_size
+        
+    async def cleanup_cached_sessions(self: pyrogram.Client):
+        """Clean up expired sessions from the cache."""
+        current_time = time.time()
+        for cache_key, sessions in list(self.upload_sessions.items()):
+            valid_sessions = []
+            for session, timestamp in sessions:
+                if current_time - timestamp < SESSION_CACHE_EXPIRY:
+                    valid_sessions.append((session, timestamp))
+                else:
+                    try:
+                        await session.stop()
+                        log.debug("Closed expired session during cleanup")
+                    except Exception as e:
+                        log.warning("Error closing expired session: %s", e)
+            
+            if valid_sessions:
+                self.upload_sessions[cache_key] = valid_sessions
+            else:
+                del self.upload_sessions[cache_key]
