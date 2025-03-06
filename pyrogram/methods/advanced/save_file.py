@@ -205,9 +205,6 @@ class SaveFile:
                 ]
 
                 try:
-                    for session in pool:
-                        await session.start()
-
                     fp.seek(part_size * file_part)
                     next_chunk_task = self.loop.create_task(self.preload(fp, part_size))
 
