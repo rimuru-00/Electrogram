@@ -280,7 +280,7 @@ class SaveFile:
 
 
     async def preload(self, fp, part_size):
-        return fp.read(part_size
+        return fp.read(part_size)
         
     async def cleanup_cached_sessions(self: pyrogram.Client):
         """Clean up expired sessions from the cache."""
