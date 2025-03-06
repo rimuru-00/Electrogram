@@ -151,9 +151,13 @@ class SaveFile:
                     if session:
                         await session.stop()
                             
-                    session = self.media_sessions[dc_id] = Session(
-                        self, dc_id, await self.storage.auth_key(),
-                        await self.storage.test_mode(), is_media=True
+                    session = Session(
+                        self, dc_id,
+                        await Auth(self, dc_id, await self.storage.test_mode()).create()
+                        if dc_id != await self.storage.dc_id()
+                        else await self.storage.auth_key(),
+                        await self.storage.test_mode(),
+                        is_media=True
                     )
                     await session.start() 
                 
