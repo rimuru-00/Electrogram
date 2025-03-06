@@ -229,11 +229,11 @@ class Session:
                 self.currently_restarting = True
                 now = time()
                 if (
-                    self._last_reconnect_attempt
-                    and (now - self._last_reconnect_attempt) < self.RECONNECT_THRESHOLD
+                    self.last_reconnect_attempt
+                    and (now - self.last_reconnect_attempt) < self.RECONNECT_THRESHOLD
                 ):
                     to_wait = self.RECONNECT_THRESHOLD + int(
-                        self.RECONNECT_THRESHOLD - (now - self._last_reconnect_attempt),
+                        self.RECONNECT_THRESHOLD - (now - self.last_reconnect_attempt),
                     )
                     log.warning(
                         "Client [%s] is reconnecting too frequently, waiting for %s seconds",
@@ -242,7 +242,7 @@ class Session:
                     )
                     await asyncio.sleep(to_wait)
                 
-                self._last_reconnect_attempt = time()
+                self.last_reconnect_attempt = time()
                 await self.stop(restart=True)
                 
                 for try_ in self.RE_START_RANGE:
