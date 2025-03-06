@@ -19,7 +19,7 @@ from importlib import import_module
 from io import BytesIO, StringIO
 from mimetypes import MimeTypes
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List
 
 import pyrogram
 from pyrogram import __license__, __version__, enums, raw, utils
@@ -328,6 +328,7 @@ class Client(Methods):
         self.parser = Parser(self)
         self.session = None
         self.media_sessions = {}
+        self.upload_sessions: Dict[tuple, List[tuple[Session, float]]] = {}
         self.media_sessions_timestamps = {}
         self.media_sessions_lock = asyncio.Lock()
         self.save_file_semaphore = asyncio.Semaphore(
