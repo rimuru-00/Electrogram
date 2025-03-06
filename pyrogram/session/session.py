@@ -85,7 +85,6 @@ class Session:
         self.ping_task_event = asyncio.Event()
         self.recv_task = None
         self.is_started = asyncio.Event()
-        self._restart_lock = asyncio.Lock()
 
         self.loop = asyncio.get_event_loop()
         self.instant_stop = False
@@ -219,72 +218,62 @@ class Session:
                 self.instant_stop = False
 
     async def restart(self) -> None:
-        if self.currently_restarting or self.instant_stop:
+        if self.currently_restarting:
+            return
+        if self.instant_stop:
             return
 
-        async with self._restart_lock:
-            if self.currently_restarting or self.instant_stop:
-                return
-            try:
-                self.currently_restarting = True
-                now = time()
-                if (
-                    self.last_reconnect_attempt
-                    and (now - self.last_reconnect_attempt) < self.RECONNECT_THRESHOLD
-                ):
-                    to_wait = self.RECONNECT_THRESHOLD + int(
-                        self.RECONNECT_THRESHOLD - (now - self.last_reconnect_attempt),
-                    )
-                    log.warning(
-                        "Client [%s] is reconnecting too frequently, waiting for %s seconds",
-                        self.client.name,
-                        to_wait,
-                    )
-                    await asyncio.sleep(to_wait)
-                
-                self.last_reconnect_attempt = time()
-                await self.stop(restart=True)
-                
-                for try_ in self.RE_START_RANGE:
+        try:
+            self.currently_restarting = True
+            now = time()
+            if (
+                self.last_reconnect_attempt
+                and (now - self.last_reconnect_attempt) < self.RECONNECT_THRESHOLD
+            ):
+                to_wait = self.RECONNECT_THRESHOLD + int(
+                    self.RECONNECT_THRESHOLD - (now - self.last_reconnect_attempt),
+                )
+                log.warning(
+                    "Client [%s] is reconnecting too frequently, sleeping for %s seconds",
+                    self.client.name,
+                    to_wait,
+                )
+                await asyncio.sleep(to_wait)
+
+            self.last_reconnect_attempt = time()
+            await self.stop(restart=True)
+            for try_ in self.RE_START_RANGE:
+                try:
+                    await self.start()
+                    break
+                except ValueError as e:
                     try:
-                        await self.start()
-                        break
-                    except ValueError as e:
-                        try:
-                            await self.client.load_session()
-                            log.info(
-                                "Client [%s] re-starting got SQLite error, connected to DB successfully. try %s; exc: %s %s",
-                                self.client.name,
-                                try_,
-                                type(e).__name__,
-                                e,
-                            )
-                        except Exception as e:
-                            log.warning(
-                                "Client [%s] failed to reload session, try %s; exc: %s %s",
-                                self.client.name,
-                                try_,
-                                type(e).__name__,
-                                e,
-                            )
-                    except Exception as e:
-                        log.warning(
-                            "Client [%s] restart failed, try %s; exc: %s %s",
+                        await self.client.load_session()
+                        log.info(
+                            "Client [%s] re-starting got SQLite error, connected to DB successfully. try %s; exc: %s %s",
                             self.client.name,
                             try_,
                             type(e).__name__,
                             e,
                         )
-                    await asyncio.sleep(1)
-    
-            except Exception as unexpected_error:
-                log.error(
-                    "Unexpected error during client restart: %s %s",
-                    type(unexpected_error).__name__,
-                    unexpected_error
-                )
-            finally:
-                self.currently_restarting = False
+                    except Exception as e:
+                        log.warning(
+                            "Client [%s] failed re-starting SQLite DB, try %s; exc: %s %s",
+                            self.client.name,
+                            try_,
+                            type(e).__name__,
+                            e,
+                        )
+                except Exception as e:
+                    log.warning(
+                        "Client [%s] failed re-starting, try %s; exc: %s %s",
+                        self.client.name,
+                        try_,
+                        type(e).__name__,
+                        e,
+                    )
+        finally:
+            self.currently_restarting = False
 
     async def handle_packet(self, packet) -> None:
         if self.instant_stop:
