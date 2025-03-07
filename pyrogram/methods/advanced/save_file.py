@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+SESSION_CACHE_EXPIRY = 10 
 
 class SaveFile: 
     async def get_cached_sessions(
@@ -43,7 +44,7 @@ class SaveFile:
             valid_sessions = []
         
             for session, timestamp in cached_sessions[:]:
-                if current_time - timestamp < 10: # 21600 6h
+                if current_time - timestamp < SESSION_CACHE_EXPIRY: # 21600 6h
                     valid_sessions.append((session, timestamp))
                 else:
                     self.loop.create_task(session.stop())
