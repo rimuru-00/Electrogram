@@ -148,7 +148,7 @@ class SaveFile:
                         return
                     for attempt in range(5):
                         try:
-                            await session.invoke(data, retires=0)
+                            await session.invoke(query=data, retries=0)
                             break
                         except (
                             OSError,
