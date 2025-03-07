@@ -157,7 +157,7 @@ class SaveFile:
                         ) as e:
                             log.warning(
                                 "[%s] Worker: [%s] Session expired or revoked due to: %s. Reconnecting...", 
-                                self.client.name, 
+                                self.name, 
                                 worker_id, 
                                 e
                             )
@@ -170,7 +170,7 @@ class SaveFile:
                                     await asyncio.create_task(session.start())
                                     log.info(
                                         "[%s] Worker: [%s] Session Reconnected Successfully...",
-                                        self.client.name,
+                                        self.name,
                                         worker_id
                                     )
                                     break 
@@ -183,7 +183,7 @@ class SaveFile:
                             else:
                                 log.exception(
                                     "[%s] Worker: [%s] Failed to reconnect after session expiry", 
-                                    self.client.name, 
+                                    self.name, 
                                     worker_id
                                 )
                                 raise SessionRevoked 
