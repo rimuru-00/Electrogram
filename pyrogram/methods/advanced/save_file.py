@@ -148,7 +148,7 @@ class SaveFile:
                         return
                     for attempt in range(5):
                         try:
-                            await session.invoke(data)
+                            await session.invoke(data, retires=0)
                             break
                         except (
                             OSError,
@@ -164,12 +164,12 @@ class SaveFile:
                                 e
                             )
                             try:
-                                await session.stop()
+                                await asyncio.create_task(session.stop())
                             except:
                                 pass
                             for _ in range(3):
                                 try:
-                                    await session.start()
+                                    await asyncio.create_task(session.start())
                                     log.info(
                                         "[%s] Worker: [%s] Session Reconnected Successfully...",
                                         self.client.name,
