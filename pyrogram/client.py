@@ -1076,7 +1076,7 @@ class Client(Methods):
                     current_time = time.time()
                     
                     session_timestamp = getattr(self, 'media_sessions_timestamps', {}).get(dc_id, 0)
-                    if not session or (current_time - session_timestamp > 1200):
+                    if not session or (current_time - session_timestamp > 21600):
                         if session:
                             await session.stop()
                             
