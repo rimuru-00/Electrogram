@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-SESSION_CACHE_EXPIRY = 10 #21600
+SESSION_CACHE_EXPIRY = 21600
 
 class SaveFile: 
     async def get_cached_sessions(
