@@ -47,7 +47,7 @@ class SaveFile:
                     valid_sessions.append((session, timestamp))
                 else:
                     self.loop.create_task(session.stop())
-                    log.debug(
+                    log.info(
                         "Closed expired session (age: %.2fs)", 
                         current_time - timestamp
                     )
@@ -57,7 +57,7 @@ class SaveFile:
         
             new_sessions_count = pool_size - len(available_sessions)
             if new_sessions_count > 0:
-                log.debug(
+                log.info(
                     "Creating %d new sessions for pool_size=%d", 
                     new_sessions_count, 
                     pool_size
