@@ -43,7 +43,7 @@ class SaveFile:
             valid_sessions = []
         
             for session, timestamp in cached_sessions[:]:
-                if current_time - timestamp < 21600:
+                if current_time - timestamp < 10: # 21600 6h
                     valid_sessions.append((session, timestamp))
                 else:
                     self.loop.create_task(session.stop())
