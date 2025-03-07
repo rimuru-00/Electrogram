@@ -153,8 +153,6 @@ class SaveFile:
                         except (
                             OSError,
                             RuntimeError,
-                            InternalServerError,
-                            ServiceUnavailable,
                             asyncio.TimeoutError,
                         ) as e:
                             log.warning(
