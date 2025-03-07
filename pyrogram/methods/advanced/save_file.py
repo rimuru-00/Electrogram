@@ -14,14 +14,13 @@ from typing import TYPE_CHECKING, BinaryIO
 import pyrogram
 from pyrogram import StopTransmissionError, raw
 from pyrogram.session import Session
-from pyrogram.errors import SessionExpired, SessionRevoked 
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 log = logging.getLogger(__name__)
 
-SESSION_CACHE_EXPIRY = 10 
+SESSION_CACHE_EXPIRY = 10 #21600
 
 class SaveFile: 
     async def get_cached_sessions(
@@ -44,7 +43,7 @@ class SaveFile:
             valid_sessions = []
         
             for session, timestamp in cached_sessions[:]:
-                if current_time - timestamp < SESSION_CACHE_EXPIRY: # 21600 6h
+                if current_time - timestamp < SESSION_CACHE_EXPIRY:
                     valid_sessions.append((session, timestamp))
                 else:
                     self.loop.create_task(session.stop())
@@ -138,56 +137,17 @@ class SaveFile:
         async with self.save_file_semaphore:
             if path is None:
                 return None
-            
-            session_cache = []
-            async def worker(session, worker_id) -> None:
+
+            async def worker(session) -> None:
                 while True:
                     data = await queue.get()
  
                     if data is None:
                         return
-                    for attempt in range(5):
+                    for attempt in range(3):
                         try:
-                            await session.invoke(query=data, retries=0)
+                            await session.invoke(data)
                             break
-                        except (
-                            OSError,
-                            RuntimeError,
-                            asyncio.TimeoutError,
-                        ) as e:
-                            log.warning(
-                                "[%s] Worker: [%s] Session expired or revoked due to: %s. Reconnecting...", 
-                                self.name, 
-                                worker_id, 
-                                e
-                            )
-                            try:
-                                await asyncio.create_task(session.stop())
-                            except:
-                                pass
-                            for _ in range(3):
-                                try:
-                                    await asyncio.create_task(session.start())
-                                    log.info(
-                                        "[%s] Worker: [%s] Session Reconnected Successfully...",
-                                        self.name,
-                                        worker_id
-                                    )
-                                    break 
-                                except:
-                                    pass
-                                
-                            if attempt < 4:
-                                await asyncio.sleep(1)
-                                session_cache.append(session)
-                            else:
-                                log.exception(
-                                    "[%s] Worker: [%s] Failed to reconnect after session expiry", 
-                                    self.name, 
-                                    worker_id
-                                )
-                                raise SessionRevoked 
-                                
                         except Exception as e:
                             log.warning("Retrying part due to error: %s", e)
                             await asyncio.sleep(2**attempt)
@@ -240,9 +200,9 @@ class SaveFile:
                 pool = await self.get_cached_sessions(pool_size, is_media=True)
 
                 workers = [
-                    self.loop.create_task(worker(session, i))
+                    self.loop.create_task(worker(session))
                     for session in pool
-                    for i in range(workers_count)
+                    for _ in range(workers_count)
                 ]
 
                 try:
@@ -314,12 +274,6 @@ class SaveFile:
                 finally:
                     for _ in workers:
                         await queue.put(None)
-                    for reconnected_session in session_cache:
-                        if reconnected_session:
-                            try:
-                                await reconnected_session.stop()
-                            except:
-                                pass
                     await asyncio.gather(*workers)
 
 
