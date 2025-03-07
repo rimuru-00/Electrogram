@@ -150,7 +150,13 @@ class SaveFile:
                         try:
                             await session.invoke(data)
                             break
-                        except (SessionExpired, SessionRevoked) as e:
+                        except (
+                            OSError,
+                            RuntimeError,
+                            InternalServerError,
+                            ServiceUnavailable,
+                            asyncio.TimeoutError,
+                        ) as e:
                             log.warning(
                                 "[%s] Worker: [%s] Session expired or revoked due to: %s. Reconnecting...", 
                                 self.client.name, 
