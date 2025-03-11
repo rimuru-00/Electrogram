@@ -165,7 +165,7 @@ class SaveFile:
             )
 
         part_size = 512 * 1024
-        queue = asyncio.Queue(64)
+        queue = asyncio.Queue(128)
 
         with (
             Path(path).open("rb", buffering=4096)  # noqa: ASYNC230
