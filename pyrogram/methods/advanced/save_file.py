@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, BinaryIO
 
 import pyrogram
 from pyrogram import StopTransmissionError, raw
-from pyrogram.session import Session, Auth
+from pyrogram.session import Session
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -31,6 +31,7 @@ class SaveFile:
         """Get cached sessions or create new ones if needed."""
         async with self.media_sessions_lock:
             dc_id = await self.storage.dc_id()
+            auth_key = await self.storage.auth_key()
             test_mode = await self.storage.test_mode()
         
             cache_key = (dc_id, pool_size, is_media)
@@ -66,7 +67,7 @@ class SaveFile:
                 session = Session(
                     self,
                     dc_id,
-                    await self.storage.auth_key(),
+                    auth_key,
                     test_mode,
                     is_media=is_media
                 )
@@ -189,8 +190,8 @@ class SaveFile:
 
             file_total_parts = math.ceil(file_size / part_size)
             is_big = file_size > 10 * 1024 * 1024
-            pool_size = 3 if is_big else 1
-            workers_count = 6 if is_big else 1
+            pool_size = 2 if is_big else 1
+            workers_count = 4 if is_big else 1
             is_missing_part = file_id is not None
             file_id = file_id or self.rnd_id()
             md5_sum = md5() if not is_big and not is_missing_part else None
