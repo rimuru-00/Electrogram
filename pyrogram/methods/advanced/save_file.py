@@ -66,11 +66,7 @@ class SaveFile:
                 session = Session(
                     self,
                     dc_id,
-                    await Auth(
-                        self, 
-                        dc_id, 
-                        await self.storage.test_mode()
-                    ).create(),
+                    await self.storage.auth_key(),
                     test_mode,
                     is_media=is_media
                 )
