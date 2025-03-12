@@ -9,7 +9,7 @@ import math
 import time
 from hashlib import md5
 from pathlib import Path, PurePath
-from typing import TYPE_CHECKING, BinaryIO
+from typing import TYPE_CHECKING, BinaryIO, List
 
 import pyrogram
 from pyrogram import StopTransmissionError, raw
@@ -138,18 +138,30 @@ class SaveFile:
             return None
 
         async def worker(session) -> None:
+            last_active = time.time()
             while True:
-                data = await queue.get()
- 
-                if data is None:
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=60)  # 60-second timeout
+                    last_active = time.time()
+
+                    if data is None:
+                        log.debug("Worker received stop signal")
+                        return
+
+                    for attempt in range(3):
+                        try:
+                            await session.invoke(data)
+                            break
+                        except Exception as e:
+                            log.warning("Retrying part due to error: %s", e)
+                            await asyncio.sleep(2**attempt)
+                except asyncio.TimeoutError:
+                    elapsed = time.time() - last_active
+                    log.warning("Worker inactive for %.2f seconds. Terminating.", elapsed)
                     return
-                for attempt in range(3):
-                    try:
-                        await session.invoke(data)
-                        break
-                    except Exception as e:
-                        log.warning("Retrying part due to error: %s", e)
-                        await asyncio.sleep(2**attempt)
+                except Exception as e:
+                    log.error("Worker error: %s", e)
+                    return
 
         def create_rpc(chunk, file_part, is_big, file_id, file_total_parts):
             if is_big:
@@ -208,7 +220,11 @@ class SaveFile:
                 fp.seek(part_size * file_part)
                 next_chunk_task = self.loop.create_task(self.preload(fp, part_size))
 
-                while True:
+                upload_complete = False
+                log.info("Starting file upload: %s (size: %.2f MB, parts: %d)", 
+                          file_name, file_size / (1024 * 1024), file_total_parts)
+                
+                while not upload_complete:
                     chunk = await next_chunk_task
                     next_chunk_task = self.loop.create_task(
                         self.preload(fp, part_size),
@@ -217,6 +233,8 @@ class SaveFile:
                     if not chunk:
                         if not is_big and not is_missing_part:
                             md5_sum = md5_sum.hexdigest()
+                        upload_complete = True
+                        log.info("All file parts read successfully")
                         break
 
                     await queue.put(
@@ -257,7 +275,30 @@ class SaveFile:
                     file_part,
                     e,
                 )
+                # Cancel worker tasks to prevent hanging
+                for worker_task in workers:
+                    if not worker_task.done():
+                        worker_task.cancel()
+                raise
             else:
+                log.info("All file parts queued for upload. Waiting for workers to complete...")
+                try:
+                    # Signal workers to stop
+                    for _ in workers:
+                        await queue.put(None)
+                    
+                    # Wait for workers with a timeout
+                    await asyncio.wait_for(asyncio.gather(*workers), timeout=30)  # 30-second timeout
+                    log.info("All workers completed successfully")
+                except asyncio.TimeoutError:
+                    log.warning("Timed out waiting for upload workers to terminate. File upload may have completed anyway.")
+                    # Cancel any remaining workers to avoid resource leaks
+                    for worker_task in workers:
+                        if not worker_task.done():
+                            worker_task.cancel()
+                
+                log.info("Upload completed successfully. File ID: %s", file_id)
+                
                 if is_big:
                     return raw.types.InputFileBig(
                         id=file_id,
@@ -271,9 +312,30 @@ class SaveFile:
                     md5_checksum=md5_sum,
                 )
             finally:
-                for _ in workers:
-                    await queue.put(None)
-                await asyncio.gather(*workers)
+                # Ensure queue is cleared and workers are terminated
+                try:
+                    # Drain the queue first to prevent deadlocks
+                    while not queue.empty():
+                        try:
+                            _ = queue.get_nowait()
+                            queue.task_done()
+                        except asyncio.QueueEmpty:
+                            break
+                        
+                    # Make sure all workers have a stop signal
+                    for _ in workers:
+                        await queue.put(None)
+                        
+                    # Cancel any workers that might still be running with a short timeout
+                    await asyncio.wait(workers, timeout=5)
+                    
+                    # Force cancel any remaining workers
+                    for worker_task in workers:
+                        if not worker_task.done():
+                            worker_task.cancel()
+                            
+                except Exception as e:
+                    log.error("Error during worker cleanup: %s", e)
 
 
     async def preload(self, fp, part_size):
